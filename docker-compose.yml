@@ -1,0 +1,29 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: isc-ats-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - BACKEND_INTERNAL_URL=http://isc-ats-backend:8000/api/v1
+      - NEXTJS_INTERNAL_URL=http://localhost:3000
+      - TURNSTILE_SITE_KEY=1x00000000000000000000AA
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - default
+      - backend_network
+
+networks:
+  default:
+  backend_network:
+    name: isc-ats-backend_default
+    external: true
