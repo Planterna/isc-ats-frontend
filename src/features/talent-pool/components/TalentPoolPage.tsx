@@ -16,6 +16,26 @@ import { useTalentPool } from '../hooks/useTalentPool';
 import { useTalentPoolNavStore } from '@/shared/stores/talentPoolNavStore';
 import type { TalentPoolEntry, TalentPoolFilters } from '../types';
 
+// Unifica diferencias de mayúsculas y espacios; conserva distinciones como C# / C++.
+const normalizeTechnology = (value: string) =>
+  value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('es');
+
+const getTechnologies = (entry: TalentPoolEntry): string[] => {
+  const unique = new Map<string, string>();
+  for (const value of [...(entry.skills ?? []), ...(entry.tools ?? [])]) {
+    const label = value.trim().replace(/\s+/g, ' ');
+    if (label && !unique.has(normalizeTechnology(label))) {
+      unique.set(normalizeTechnology(label), label);
+    }
+  }
+  return Array.from(unique.values()).sort((a, b) => a.localeCompare(b, 'es'));
+};
+
+// El cambio queda contenido en esta página; no altera el contrato de la API.
+type UnifiedTalentPoolFilters = Omit<TalentPoolFilters, 'skill' | 'tool'> & {
+  technology: string | null;
+};
+
 const MATCH_COLORS = (pct: number) => {
   if (pct >= 75) return 'text-success bg-success/10';
   if (pct >= 50) return 'text-warning bg-warning/10';
@@ -27,13 +47,12 @@ export function TalentPoolPage() {
   const { data: entries = [], isLoading } = useTalentPool();
   const setNavEntries = useTalentPoolNavStore((s) => s.setEntries);
 
-  const [filters, setFilters] = useState<TalentPoolFilters>({
+  const [filters, setFilters] = useState<UnifiedTalentPoolFilters>({
     search: '',
     career: null,
     vacancyId: null,
     status: '',
-    skill: null,
-    tool: null,
+    technology: null,
   });
 
   const careers = useMemo(() => {
@@ -52,28 +71,17 @@ export function TalentPoolPage() {
     ).sort((a, b) => a[1].localeCompare(b[1]));
   }, [entries]);
 
-  const availableSkills = useMemo(() => {
-    const set = new Set<string>();
+  const availableTechnologies = useMemo(() => {
+    const unique = new Map<string, string>();
     for (const entry of entries) {
-      if (Array.isArray(entry.skills)) {
-        for (const skill of entry.skills) {
-          if (skill && skill.trim()) set.add(skill.trim());
-        }
+      for (const label of getTechnologies(entry)) {
+        const id = normalizeTechnology(label);
+        if (!unique.has(id)) unique.set(id, label);
       }
     }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [entries]);
-
-  const availableTools = useMemo(() => {
-    const set = new Set<string>();
-    for (const entry of entries) {
-      if (Array.isArray(entry.tools)) {
-        for (const tool of entry.tools) {
-          if (tool && tool.trim()) set.add(tool.trim());
-        }
-      }
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
+    return Array.from(unique, ([id, label]) => ({ id, label })).sort((a, b) =>
+      a.label.localeCompare(b.label, 'es'),
+    );
   }, [entries]);
 
   const hasActiveFilters = Boolean(
@@ -81,8 +89,7 @@ export function TalentPoolPage() {
       filters.career ||
       filters.vacancyId ||
       filters.status ||
-      filters.skill ||
-      filters.tool,
+      filters.technology,
   );
 
   const resetFilters = () => {
@@ -91,8 +98,7 @@ export function TalentPoolPage() {
       career: null,
       vacancyId: null,
       status: '',
-      skill: null,
-      tool: null,
+      technology: null,
     });
   };
 
@@ -103,7 +109,7 @@ export function TalentPoolPage() {
         const q = filters.search.trim().toLowerCase();
         if (q) {
           const matchName = e.candidateName.toLowerCase().includes(q);
-          const matchCareer = e.career.toLowerCase().includes(q);
+          const matchCareer = (e.career ?? '').toLowerCase().includes(q);
           const matchEmail = e.email?.toLowerCase().includes(q);
           const matchVacancy = e.vacancyTitle?.toLowerCase().includes(q);
           const matchSkill = e.skills?.some((s) => s.toLowerCase().includes(q));
@@ -118,16 +124,9 @@ export function TalentPoolPage() {
         if (filters.status === 'active' && !e.isActive) return false;
         if (filters.status === 'inactive' && e.isActive) return false;
 
-        if (filters.skill) {
-          const target = filters.skill.toLowerCase();
-          if (!e.skills?.some((s) => s.toLowerCase().includes(target))) {
-            return false;
-          }
-        }
-
-        if (filters.tool) {
-          const target = filters.tool.toLowerCase();
-          if (!e.tools?.some((t) => t.toLowerCase().includes(target))) {
+        if (filters.technology) {
+          const target = normalizeTechnology(filters.technology);
+          if (!getTechnologies(e).some((value) => normalizeTechnology(value) === target)) {
             return false;
           }
         }
@@ -164,58 +163,50 @@ export function TalentPoolPage() {
     },
     {
       key: 'technologies',
-      header: 'Conocimientos y herramientas',
+      header: 'Tecnologías',
       render: (e) => {
-        const skills = e.skills ?? [];
-        const tools = e.tools ?? [];
-        const total = skills.length + tools.length;
-
-        if (total === 0) {
-          return <span className="text-xs text-ink-subtle">Sin datos de CV</span>;
+        const technologies = getTechnologies(e);
+        if (technologies.length === 0) {
+          return <span className="text-xs text-ink-subtle">Sin tecnologías registradas</span>;
         }
 
+        // Si la tecnología seleccionada estaba oculta, muéstrala primero.
+        const target = filters.technology ? normalizeTechnology(filters.technology) : null;
+        const ordered = target
+          ? [
+              ...technologies.filter((value) => normalizeTechnology(value) === target),
+              ...technologies.filter((value) => normalizeTechnology(value) !== target),
+            ]
+          : technologies;
+        const visible = ordered.slice(0, 4);
+        const hidden = ordered.slice(visible.length);
+
         return (
-          <div className="flex flex-wrap items-center gap-1 max-w-[280px]">
-            {skills.slice(0, 2).map((s) => {
-              const isMatch = Boolean(
-                filters.skill && s.toLowerCase().includes(filters.skill.toLowerCase()),
-              );
+          <div className="flex max-w-[280px] flex-wrap items-center gap-1">
+            {visible.map((value) => {
+              const isMatch = target !== null && normalizeTechnology(value) === target;
               return (
                 <span
-                  key={s}
+                  key={normalizeTechnology(value)}
                   className={cn(
-                    'rounded-full px-2 py-0.5 text-[11px] font-medium border transition-colors',
+                    'rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors',
                     isMatch
                       ? 'bg-primary-100 text-primary-800 border-primary-300 font-semibold'
                       : 'bg-primary-50 text-primary-700 border-primary-100',
                   )}
-                  title={`Conocimiento: ${s}`}
+                  title={value}
                 >
-                  {s}
+                  {value}
                 </span>
               );
             })}
-            {tools.slice(0, 2).map((t) => {
-              const isMatch = Boolean(
-                filters.tool && t.toLowerCase().includes(filters.tool.toLowerCase()),
-              );
-              return (
-                <span
-                  key={t}
-                  className={cn(
-                    'rounded-full px-2 py-0.5 text-[11px] font-medium border transition-colors',
-                    isMatch
-                      ? 'bg-accent-100 text-accent-800 border-accent-300 font-semibold'
-                      : 'bg-surface-2 text-ink-muted border-border',
-                  )}
-                  title={`Herramienta: ${t}`}
-                >
-                  {t}
-                </span>
-              );
-            })}
-            {total > 4 && (
-              <span className="text-[11px] text-ink-subtle font-medium">+{total - 4}</span>
+            {hidden.length > 0 && (
+              <span
+                className="text-[11px] font-medium text-ink-subtle"
+                title={hidden.join(', ')}
+              >
+                +{hidden.length}
+              </span>
             )}
           </div>
         );
@@ -266,36 +257,30 @@ export function TalentPoolPage() {
       >
         <Combobox
           valueKey="id"
-          aria-label="Filtrar por conocimiento"
+          aria-label="Filtrar por tecnología"
+          placeholder="Tecnología"
+          emptyValueShowsPlaceholder
+          clearSearchOnOpen
           className="w-auto min-w-[190px]"
-          value={filters.skill ?? ''}
-          onChange={(value) => setFilters((f) => ({ ...f, skill: value || null }))}
+          value={filters.technology ?? ''}
+          onChange={(value) => setFilters((f) => ({ ...f, technology: value || null }))}
           options={[
-            { id: '', label: 'Conocimiento: Todos' },
-            ...availableSkills.map((s) => ({ id: s, label: s })),
-          ]}
-        />
-
-        <Combobox
-          valueKey="id"
-          aria-label="Filtrar por herramienta"
-          className="w-auto min-w-[190px]"
-          value={filters.tool ?? ''}
-          onChange={(value) => setFilters((f) => ({ ...f, tool: value || null }))}
-          options={[
-            { id: '', label: 'Herramienta: Todas' },
-            ...availableTools.map((t) => ({ id: t, label: t })),
+            { id: '', label: 'Todas' },
+            ...availableTechnologies,
           ]}
         />
 
         <Combobox
           valueKey="id"
           aria-label="Filtrar por carrera"
+          placeholder="Carrera"
+          emptyValueShowsPlaceholder
+          clearSearchOnOpen
           className="w-auto min-w-[170px]"
           value={filters.career ?? ''}
           onChange={(value) => setFilters((f) => ({ ...f, career: value || null }))}
           options={[
-            { id: '', label: 'Carrera: Todas' },
+            { id: '', label: 'Todas' },
             ...careers.map((c) => ({ id: c, label: c })),
           ]}
         />
@@ -303,11 +288,14 @@ export function TalentPoolPage() {
         <Combobox
           valueKey="id"
           aria-label="Filtrar por vacante de origen"
+          placeholder="Vacante de origen"
+          emptyValueShowsPlaceholder
+          clearSearchOnOpen
           className="w-auto min-w-[190px]"
           value={filters.vacancyId ?? ''}
           onChange={(value) => setFilters((f) => ({ ...f, vacancyId: value || null }))}
           options={[
-            { id: '', label: 'Vacante: Todas' },
+            { id: '', label: 'Todas' },
             ...vacancies.map(([id, title]) => ({ id, label: title })),
           ]}
         />
@@ -315,11 +303,14 @@ export function TalentPoolPage() {
         <Combobox
           valueKey="id"
           aria-label="Filtrar por estado"
+          placeholder="Estado"
+          emptyValueShowsPlaceholder
+          clearSearchOnOpen
           className="w-auto min-w-[140px]"
           value={filters.status}
           onChange={(value) => setFilters((f) => ({ ...f, status: value }))}
           options={[
-            { id: '', label: 'Estado: Todos' },
+            { id: '', label: 'Todos' },
             { id: 'active', label: 'Activo' },
             { id: 'inactive', label: 'Inactivo' },
           ]}
